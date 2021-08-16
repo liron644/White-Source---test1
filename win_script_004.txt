@@ -1,0 +1,372 @@
+﻿$Version = "0.04"
+# v0.02 update: added Anti Virus status check 13.11.2018
+# v0.03 update: added Screen Saver Setings check 14.11.18
+# v0.04 update: added SMB v1 Protocol check 06.03.19
+##########################################################
+
+$startTime = Get-Date
+write-host Hello dear user! -ForegroundColor Magenta
+#check if running as an elevated admin
+$runningAsAdmin = (whoami /all | select-string S-1-16-12288) -ne $null
+if (!$runningAsAdmin)
+    {Write-host "Please run the script as an elevated admin, or else some output will be missing! :-(" -ForegroundColor Red}
+Write-Host This script will output the results to a folder or a zip file with the server name. -ForegroundColor Magenta
+
+# get hostname to use as the folder name and file names
+$hostname = hostname
+# get the windows version
+$winVersion = [System.Environment]::OSVersion.Version
+
+# create new folder if it doesn't exists
+if (!(Test-Path $hostname)) {New-Item $hostname -type directory | Out-Null}
+
+#########################################################
+
+# get current user privileges
+write-host Running whoami... -ForegroundColor Green
+whoami /all > $hostname\whoami-all_$hostname.txt
+
+# get IP settings
+write-host Running ipconfig... -ForegroundColor Green
+ipconfig /all > $hostname\ipconfig_$hostname.txt
+
+# check internet connectivity
+write-host Trying to reach the internet... -ForegroundColor Green
+"============= ping -n 2 8.8.8.8 =============" | Out-File $hostname\Internet-Connectivity_$hostname.txt
+ping -n 2 8.8.8.8 | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append
+# more detailed test for newer PowerShell versions - takes a lot of time and not very important
+#try {
+    # "============= Test-NetConnection -InformationLevel Detailed =============" | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append
+    # Test-NetConnection -InformationLevel Detailed | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append
+    #"============= Test-NetConnection -ComputerName www.google.com -Port 443 -InformationLevel Detailed =============" | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append
+    #Test-NetConnection -ComputerName www.google.com -Port 443 -InformationLevel Detailed | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append
+#}
+#catch {"Test-NetConnection command doesn't exists, old powershell version." | Out-File $hostname\Internet-Connectivity_$hostname.txt -Append}
+
+# get GPOs
+write-host Checking GPOs... -ForegroundColor Green
+Remove-Item $hostname\gpresult_$hostname.html -ErrorAction SilentlyContinue
+gpresult /h $hostname\gpresult_$hostname.html
+# /h doesn't exists on Windows 2003
+if (!(Test-Path $hostname\gpresult_$hostname.html)) {gpresult $hostname\rsop_$hostname.txt}
+
+# get security policy settings (secpol.msc), run as admin is required
+# to open the *.inf output file, open MMC, add snap-in "Security Templates", right click and choose new path, choose the *.inf file path, and open it
+if ($runningAsAdmin)
+{
+    write-host Getting security policy settings... -ForegroundColor Green
+    secedit /export /CFG $hostname\secpol_$hostname.inf | Out-Null
+}
+else
+{
+    write-host Unable to get security policy settings... elevated admin permissions are required -ForegroundColor Red
+}
+
+# get installed Updates
+write-host Checking for installed Windows Updates... -ForegroundColor Green
+Get-HotFix | sort InstalledOn -Descending | Out-File $hostname\Updates_$hostname.txt
+
+# get installed hotfixes (/format:htable doesn't always work!)
+write-host Checking for installed hotfixes... -ForegroundColor Green
+wmic qfe list full /format:htable > $hostname\hotfixes_$hostname.html
+if (!(Test-Path $hostname\hotfixes_$hostname.html)) {wmic qfe list > $hostname\hotfixes_$hostname.txt}
+if ((Get-Content $hostname\hotfixes_$hostname.html) -eq $null)
+{
+    Remove-Item $hostname\hotfixes_$hostname.html
+    wmic qfe list > $hostname\hotfixes_$hostname.txt
+}
+
+# get windows features (Windows vista/2008 & run-as admin are required)
+if ($winVersion.Major -ge 6)
+{
+    if ($runningAsAdmin)
+    {
+        write-host Checking windows features... -ForegroundColor Green
+        dism /online /get-features /format:table > $hostname\Windows-Features_$hostname.txt
+    }
+    else
+    {
+        write-host Unable to get windows features... elevated admin permissions are required -ForegroundColor Red
+    }
+}
+
+# get audit policy (Windows vista/2008 & run-as admin are required)
+if ($winVersion.Major -ge 6)
+{
+    if ($runningAsAdmin)
+    {
+        write-host Checking audit policy... -ForegroundColor Green
+        auditpol /get /category:*  > $hostname\Audit-Policy_$hostname.txt
+    }
+    else
+    {
+        write-host Unable to get audit policy... elevated admin permissions are required -ForegroundColor Red
+    }
+}
+
+# get Event Log Size
+write-host Checking Event Log Size... -ForegroundColor Green
+Get-EventLog -list > $hostname\EventLog_$hostname.txt
+
+# get processes (new powershell version and run-as admin are required for IncludeUserName)
+write-host Getting processes... -ForegroundColor Green
+try {Get-Process -IncludeUserName | ft -AutoSize ProcessName, id, company, ProductVersion, username, cpu, WorkingSet | Out-String -Width 180 | Out-File $hostname\Process-list_$hostname.txt}
+# run without IncludeUserName if the script doesn't have elevated permissions or for old powershell versions
+catch {Get-Process | ft -AutoSize ProcessName, id, company, ProductVersion, cpu, WorkingSet | Out-String -Width 180 | Out-File $hostname\Process-list_$hostname.txt}
+
+# get services
+write-host Getting services... -ForegroundColor Green
+Get-WmiObject win32_service  | Sort displayname | ft -AutoSize DisplayName, Name, State, StartMode, StartName | Out-String -Width 180 | Out-File $hostname\Services_$hostname.txt
+
+# get installed 32bit softwares
+write-host Getting installed 32bit softwares... -ForegroundColor Green
+Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* |  Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | sort DisplayName | Out-String -Width 180 | Out-File $hostname\32Bit_$hostname.txt
+
+# get installed 64bit softwares
+write-host Getting installed 64bit softwares... -ForegroundColor Green
+Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate | sort DisplayName | Out-String -Width 180 | Out-File $hostname\64Bit_$hostname.txt
+
+# get shared folders (Share permissions are missing for older PowerShell versions)
+write-host Getting shared folders... -ForegroundColor Green
+"============= Shared Folders =============" | Out-File $hostname\Shares_$hostname.txt
+$shares = Get-WmiObject -Class Win32_Share
+$shares | Out-File $hostname\Shares_$hostname.txt -Append
+# get shared folders + share permissions + NTFS permissions with SmbShare module (exists only in Windows 8 or 2012 and above)
+foreach ($share in $shares)
+{
+    $sharePath = $share.Path
+    $shareName = $share.Name
+    "`n============= Share Name: $shareName | Share Path: $sharePath =============" | Out-File $hostname\Shares_$hostname.txt -Append
+    "Share Permissions:" | Out-File $hostname\Shares_$hostname.txt -Append
+    # Get share permissions with SmbShare module (exists only in Windows 8 or 2012 and above)
+    try
+    {
+        import-module smbshare -ErrorAction SilentlyContinue
+        $share | Get-SmbShareAccess | Out-String -Width 180 | Out-File $hostname\Shares_$hostname.txt -Append
+    }
+    catch
+    {
+        $shareSecSettings = Get-WmiObject -Class Win32_LogicalShareSecuritySetting -Filter "Name='$shareName'"
+        if ($shareSecSettings -eq $null)
+            {
+            # Unfortunately, some of the shares security settings are missing from the WMI. Complicated stuff. Google "Count of shares != Count of share security"
+            "Couldn't find share permissions, doesn't exist in WMI Win32_LogicalShareSecuritySetting.`n" | Out-File $hostname\Shares_$hostname.txt -Append}
+        else
+        {
+            $DACLs = (Get-WmiObject -Class Win32_LogicalShareSecuritySetting -Filter "Name='$shareName'" -ErrorAction SilentlyContinue).GetSecurityDescriptor().Descriptor.DACL
+            foreach ($DACL in $DACLs)
+            {
+                if ($DACL.Trustee.Domain) {$Trustee = $DACL.Trustee.Domain + "\" + $DACL.Trustee.Name}
+                else {$Trustee = $DACL.Trustee.Name}
+                $AccessType = [Security.AccessControl.AceType]$DACL.AceType
+                $FileSystemRights = $DACL.AccessMask -as [Security.AccessControl.FileSystemRights]
+                "Trustee: $Trustee | Type: $AccessType | Permission: $FileSystemRights" | Out-File $hostname\Shares_$hostname.txt -Append
+            }
+        }    
+    }
+    "NTFS Permissions:" | Out-File $hostname\Shares_$hostname.txt -Append
+    try {(Get-Acl $sharePath).Access | ft | Out-File $hostname\Shares_$hostname.txt -Append}
+    catch {"No NTFS permissions were found." | Out-File $hostname\Shares_$hostname.txt -Append}
+}
+
+# get local & domain account policy
+write-host Getting local and domain account policy... -ForegroundColor Green
+"============= Local Account Policy =============" | Out-File $hostname\AccountPolicy_$hostname.txt
+NET ACCOUNTS | Out-File $hostname\AccountPolicy_$hostname.txt -Append
+# check if the computer is in a domain
+"`n============= Domain Account Policy =============" | Out-File $hostname\AccountPolicy_$hostname.txt -Append
+if ((Get-WmiObject -Class Win32_ComputerSystem).PartOfDomain)
+    {
+        if (Test-ComputerSecureChannel) {NET ACCOUNTS /domain | Out-File $hostname\AccountPolicy_$hostname.txt -Append}    
+        else {"Error: No connection to the domain." | Out-File $hostname\AccountPolicy_$hostname.txt -Append}
+    }
+else
+    {"Error: The computer is not part of a domain." | Out-File $hostname\AccountPolicy_$hostname.txt -Append}
+
+# get local accounts
+write-host Getting local Accounts... -ForegroundColor Green
+"============= Local Administrators =============" | Out-File $hostname\Local-Users_$hostname.txt
+NET LOCALGROUP administrators | Out-File $hostname\Local-Users_$hostname.txt -Append
+"`n============= Local Users =============" | Out-File $hostname\Local-Users_$hostname.txt -Append
+# Get-LocalUser exists only in Windows 10 / 2016
+try
+	{Get-LocalUser | ft name, enabled, AccountExpires, PasswordExpires, PasswordRequired, PasswordLastSet, LastLogon, description, SID | Out-String -Width 180 | Out-File $hostname\Local-Users_$hostname.txt -Append}
+catch
+	{Get-CimInstance win32_useraccount -Namespace "root\cimv2" -Filter "LocalAccount='$True'" | Select Caption,Disabled,Lockout,PasswordExpires,PasswordRequired,Description,SID | format-table -autosize | Out-String -Width 180 | Out-File $hostname\Local-Users_$hostname.txt -Append}
+	
+# get network connections (run-as admin is required for -b associated application switch)
+write-host Running netstat... -ForegroundColor Green
+"============= netstat -naob (includes proccess name, elevated admin permission is required =============" | Out-File $hostname\netstat_$hostname.txt
+netstat -naob | Out-File $hostname\netstat_$hostname.txt -Append
+"`n============= netstat -nao =============" | Out-File $hostname\netstat_$hostname.txt -Append
+netstat -nao | Out-File $hostname\netstat_$hostname.txt -Append
+# netstat -ao | Out-File $hostname\netstat_$hostname.txt -Append  # shows server names, but takes a lot of time and not very important
+
+# check SMB protocol hardening
+Write-Host Checking SMB hardening... -ForegroundColor Green
+"`n============= SMB versions Support (Server Settings) =============" | Out-File $hostname\SMB_$hostname.txt
+# Check if Windows Vista/2008 or above
+if ($winVersion.Major -ge 6)
+{
+    $SMB1 = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters SMB1 -ErrorAction SilentlyContinue
+    $SMB2 = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters SMB2 -ErrorAction SilentlyContinue
+    if ($SMB1.SMB1 -eq 0)
+        {"SMB1 Server is not supported. Which is nice." | Out-File $hostname\SMB_$hostname.txt -Append}
+    else
+        {"SMB1 Server is supported. Which is pretty bad and certainly a finding." | Out-File $hostname\SMB_$hostname.txt -Append}
+    if ($SMB2.SMB2 -eq 0)
+        {"SMB2 and SMB3 Server are not supported. Which is weird, but not a finding." | Out-File $hostname\SMB_$hostname.txt -Append}
+    else
+        {"SMB2 and SMB3 Server are supported. Which is OK." | Out-File $hostname\SMB_$hostname.txt -Append}
+}
+else
+{
+    "Old Windows versions (XP or 2003) support only SMB1." | Out-File $hostname\SMB_$hostname.txt -Append
+}
+"`n============= SMB versions Support (Client Settings) =============" | Out-File $hostname\SMB_$hostname.txt -Append
+# Check if Windows Vista/2008 or above
+if ($winVersion.Major -ge 6)
+{
+    $SMB1Client = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb10 Start -ErrorAction SilentlyContinue
+    Switch ($SMB1Client.Start)
+    {
+        0 {"SMB1 Client is set to 'Boot'. Which is weird. Disabled is better." | Out-File $hostname\SMB_$hostname.txt -Append}
+        1 {"SMB1 Client is set to 'System'. Which is not weird. although disabled is better." | Out-File $hostname\SMB_$hostname.txt -Append}
+        2 {"SMB1 Client is set to 'Automatic' (Enabled). Which is not very good, a possible finding, but not a must." | Out-File $hostname\SMB_$hostname.txt -Append}
+        3 {"SMB1 Client is set to 'Manual' (Turned off, but can be started). Which is not pretty good, although disabled is better." | Out-File $hostname\SMB_$hostname.txt -Append}
+        4 {"SMB1 Client is set to 'Disabled'. Which is nice." | Out-File $hostname\SMB_$hostname.txt -Append}
+    }
+}
+else
+{
+    "Old Windows versions (XP or 2003) support only SMB1." | Out-File $hostname\SMB_$hostname.txt -Append
+}
+"`n============= SMB Signing (Server Settings) =============" | Out-File $hostname\SMB_$hostname.txt -Append
+$SmbServerRequireSigning = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters RequireSecuritySignature
+$SmbServerSupportSigning = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters EnableSecuritySignature
+if ($SmbServerRequireSigning.RequireSecuritySignature -eq 1)
+{
+    "Microsoft network server: Digitally sign communications (always) = Enabled" | Out-File $hostname\SMB_$hostname.txt -Append
+    "SMB signing is required by the server, Which is good." | Out-File $hostname\SMB_$hostname.txt -Append
+}
+else
+{
+    if ($SmbServerSupportSigning.EnableSecuritySignature -eq 1)
+    {
+        "Microsoft network server: Digitally sign communications (always) = Disabled" | Out-File $hostname\SMB_$hostname.txt -Append
+        "Microsoft network server: Digitally sign communications (if client agrees) = Enabled" | Out-File $hostname\SMB_$hostname.txt -Append
+        "SMB signing is enabled by the server, but not required. Clients of this server are susceptible to man-in-the-middle attacks, if they don't initiate signing. A possible finding." | Out-File $hostname\SMB_$hostname.txt -Append
+    }
+    else
+    {
+        "Microsoft network server: Digitally sign communications (always) = Disabled." | Out-File $hostname\SMB_$hostname.txt -Append
+        "Microsoft network server: Digitally sign communications (if client agrees) = Disabled." | Out-File $hostname\SMB_$hostname.txt -Append
+        "SMB signing is disabled by the server. Clients of this server are susceptible to man-in-the-middle attacks. A finding." | Out-File $hostname\SMB_$hostname.txt -Append
+    }
+}
+"`n============= SMB Signing (Client Settings) =============" | Out-File $hostname\SMB_$hostname.txt -Append
+$SmbClientRequireSigning = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters RequireSecuritySignature
+$SmbClientSupportSigning = Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters EnableSecuritySignature
+if ($SmbClientRequireSigning.RequireSecuritySignature -eq 1)
+{
+    "Microsoft network client: Digitally sign communications (always) = Enabled" | Out-File $hostname\SMB_$hostname.txt -Append
+    "SMB signing is required by the client, Which is good." | Out-File $hostname\SMB_$hostname.txt -Append
+}
+else
+{
+    if ($SmbClientSupportSigning.EnableSecuritySignature -eq 1)
+    {
+        "Microsoft network client: Digitally sign communications (always) = Disabled" | Out-File $hostname\SMB_$hostname.txt -Append
+        "Microsoft network client: Digitally sign communications (if client agrees) = Enabled" | Out-File $hostname\SMB_$hostname.txt -Append
+        "SMB signing is enabled by the client, but not required. This computer is susceptible to man-in-the-middle attacks, if the server don't support signing. A possible finding." | Out-File $hostname\SMB_$hostname.txt -Append
+    }
+    else
+    {
+        "Microsoft network client: Digitally sign communications (always) = Disabled." | Out-File $hostname\SMB_$hostname.txt -Append
+        "Microsoft network client: Digitally sign communications (if client agrees) = Disabled." | Out-File $hostname\SMB_$hostname.txt -Append
+        "SMB signing is disabled by the client. This computer is susceptible to man-in-the-middle attacks. A finding." | Out-File $hostname\SMB_$hostname.txt -Append
+    }
+}
+
+# check SMB1Protocol
+write-host Checking SMBv1 Protocol... -ForegroundColor Green
+Get-SmbServerConfiguration | Select EnableSMB1Protocol > $hostname\SMB1_$hostname.txt
+
+# Getting RDP security settings
+Write-Host Checking RDP security settings... -ForegroundColor Green
+"============= Raw RDP Settings =============" | Out-File $hostname\RDP_$hostname.txt
+$RDP = Get-WmiObject -class Win32_TSGeneralSetting -Namespace root\cimv2\terminalservices -Filter “TerminalName='RDP-tcp'” 
+$RDP | fl Terminal*,*Encrypt*, Policy*,Security*,SSL*,*Auth* | Out-File $hostname\RDP_$hostname.txt -Append
+"============= NLA (Network Level Authentication) =============" | Out-File $hostname\RDP_$hostname.txt -Append
+if ($RDP.UserAuthenticationRequired -eq 1)
+    {"NLA is required, which is fine." | Out-File $hostname\RDP_$hostname.txt -Append}
+if ($RDP.UserAuthenticationRequired -eq 0)
+    {"NLA is not required, which is bad. A finding." | Out-File $hostname\RDP_$hostname.txt -Append}
+"============= Security Layer (SSL/TLS) =============" | Out-File $hostname\RDP_$hostname.txt -Append
+if ($RDP.SecurityLayer -eq 0)
+    {"Native RDP encryption is used instead of SSL/TLS. Which is bad. A finding." | Out-File $hostname\RDP_$hostname.txt -Append}
+if ($RDP.SecurityLayer -eq 1)
+    {"SSL/TLS is supported, but not required ('Negotiate' setting). Which is not recommended, but not necessary a finding." | Out-File $hostname\RDP_$hostname.txt -Append}
+if ($RDP.SecurityLayer -eq 2)
+    {"SSL/TLS is required for connecting. Which is good." | Out-File $hostname\RDP_$hostname.txt -Append}
+"`n============= Raw RDP Timeout Settings =============" | Out-File $hostname\RDP_$hostname.txt -Append
+$RDPTimeout = Get-Item "HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services" 
+if ($RDPTimeout.ValueCount -eq 0)
+    {"RDP timeout is not configured. A possible finding." | Out-File $hostname\RDP_$hostname.txt -Append}
+else
+{
+    "The following RDP timeout properties were configured:" | Out-File $hostname\RDP_$hostname.txt -Append
+    $RDPTimeout | Out-File $hostname\RDP_$hostname.txt -Append
+    "`nMaxConnectionTime = Time limit for active RDP sessions" | Out-File $hostname\RDP_$hostname.txt -Append
+    "MaxIdleTime = Time limit for active but idle RDP sessions" | Out-File $hostname\RDP_$hostname.txt -Append
+    "MaxConnectionTime = Time limit for disconnected RDP sessions" | Out-File $hostname\RDP_$hostname.txt -Append
+    "fResetBroken = Log off session (instead of disconnect) when time limits are reached" | Out-File $hostname\RDP_$hostname.txt -Append
+    "60000 = 1 minute, 3600000 = 1 hour, etc." | Out-File $hostname\RDP_$hostname.txt -Append
+    "`nFor further information, see the GPO settings at: Computer Configuration\Administrative Templates\Windows Components\Remote Desktop Services\Remote Desktop Session\Session Time Limits" | Out-File $hostname\RDP_$hostname.txt -Append
+}
+
+# getting credential guard settings (for Windows 10 only)
+if ($winVersion.Major -ge 10)
+{
+    Write-Host Checking credential guard settings... -ForegroundColor Green
+    "============= Raw Device Guard Settings (Including Credential Guard) =============" | Out-File $hostname\Credential-Guard_$hostname.txt
+    $DevGuard = Get-CimInstance –ClassName Win32_DeviceGuard –Namespace root\Microsoft\Windows\DeviceGuard
+    $DevGuard | Out-File $hostname\Credential-Guard_$hostname.txt -Append
+    "============= Credential Guard Settings =============" | Out-File $hostname\Credential-Guard_$hostname.txt -Append
+    if (($DevGuard.SecurityServicesConfigured -contains 1) -and ($DevGuard.SecurityServicesRunning -contains 1))
+        {"Credential Guard is configured and running. Which is good." | Out-File $hostname\Credential-Guard_$hostname.txt -Append}
+    else
+        {"Credential Guard is turned off. A possible finding." | Out-File $hostname\Credential-Guard_$hostname.txt -Append}
+}
+
+# get Installed Antivirus
+#write-host Getting Installed Antivirus... -ForegroundColor Green
+#Get-WmiObject -namespace root\SecurityCenter2 -computername localhost -Query "Select * from AntiVirusProduct" > $hostname\AntiVirusProduct_$hostname.txt
+#wmic /namespace:\\root\SecurityCenter2 path AntiVirusProduct get /value >> $hostname\AntiVirusProduct_$hostname.txt
+# Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct >> $hostname\AntiVirusProduct_$hostname.txt
+
+# get ScreenSaver settings
+write-host gettings ScreenSaver setting... -ForegroundColor Green
+Get-Wmiobject win32_desktop | where name -match $env:USERNAME > $hostname\ScreenSaver_$hostname.txt
+#wmic desktop get ScreenSaverActive,ScreenSaverSecure,ScreenSaverTimeout >> $hostname\ScreenSaver_$hostname.txt
+ 
+# get system info
+write-host Running systeminfo... -ForegroundColor Green
+systeminfo > $hostname\systeminfo_$hostname.txt
+
+# compress the files to a zip. works for PowerShell 5.0 (Windows 10/2016) only. sometimes the compress fails because a file is still in use.
+try
+{
+    Compress-Archive -Path $hostname\* -DestinationPath $hostname -Force -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force -Path $hostname -ErrorAction SilentlyContinue
+    Write-Host All Done! Please send the output ZIP file to the auditor. -ForegroundColor Magenta
+}
+catch
+{
+    Write-Host All Done! Please ZIP all the files and send them to the auditor. -ForegroundColor Magenta
+}
+
+$endTime = Get-Date
+$elapsed = $endTime - $startTime
+Write-Host The script took $elapsed.Seconds seconds. Thank you from Snir! -ForegroundColor Magenta
+Start-Sleep -Seconds 2
